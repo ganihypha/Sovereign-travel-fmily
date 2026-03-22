@@ -345,9 +345,11 @@ app.get('/', (c) => {
     
     <style>
         * { -webkit-tap-highlight-color: transparent; }
-        body { overscroll-behavior-y: none; }
+        body { overscroll-behavior-y: none; margin: 0; padding: 0; }
         .slide-up { animation: slideUp 0.3s ease-out; }
         @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .fade-out { animation: fadeOut 0.3s ease-out forwards; }
+        @keyframes fadeOut { to { opacity: 0; visibility: hidden; } }
         .tab-active { @apply bg-emerald-600 text-white; }
         .tab-inactive { @apply bg-white text-gray-700 hover:bg-gray-50; }
         .card { @apply bg-white rounded-xl shadow-sm p-4 mb-4; }
@@ -359,6 +361,12 @@ app.get('/', (c) => {
         .badge-dp { @apply bg-yellow-100 text-yellow-800; }
         .badge-paid { @apply bg-green-100 text-green-800; }
         .badge-departed { @apply bg-purple-100 text-purple-800; }
+        
+        /* Skeleton loading styles */
+        .skeleton { @apply animate-pulse bg-gray-200 rounded; }
+        .skeleton-text { @apply skeleton h-4 mb-2; }
+        .skeleton-title { @apply skeleton h-6 mb-3 w-2/3; }
+        .skeleton-card { @apply skeleton h-24 mb-4; }
     </style>
 </head>
 <body class="bg-gray-50">
@@ -366,14 +374,19 @@ app.get('/', (c) => {
     <!-- App Container -->
     <div id="app" class="max-w-md mx-auto min-h-screen bg-white shadow-lg relative">
         
-        <!-- Loading Screen -->
-        <div id="loadingScreen" class="fixed inset-0 bg-emerald-600 z-50 flex items-center justify-center">
+        <!-- Loading Screen (Fast splash) -->
+        <div id="loadingScreen" class="fixed inset-0 bg-gradient-to-br from-emerald-600 to-emerald-700 z-50 flex items-center justify-center">
             <div class="text-center text-white">
                 <div class="mb-4">
                     <i class="fas fa-plane-departure text-6xl mb-4 animate-bounce"></i>
                 </div>
                 <h1 class="text-2xl font-bold mb-2">Sovereign Travel</h1>
-                <p class="text-emerald-100">Loading...</p>
+                <p class="text-emerald-100 text-sm">Memuat aplikasi...</p>
+                <div class="mt-4">
+                    <div class="w-48 h-1 bg-emerald-500 rounded-full overflow-hidden mx-auto">
+                        <div class="h-full bg-white animate-pulse"></div>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -574,29 +587,83 @@ app.get('/', (c) => {
 
     <script>
         // ============================================
-        // GLOBAL STATE
+        // GLOBAL STATE & CACHE
         // ============================================
         let currentAgent = null;
         let currentTab = 'dashboard';
         let customers = [];
         let packages = [];
         let bookings = [];
+        
+        // Simple in-memory cache with expiry
+        const cache = {
+            data: {},
+            set(key, value, ttl = 60000) {
+                this.data[key] = {
+                    value,
+                    expiry: Date.now() + ttl
+                };
+            },
+            get(key) {
+                const item = this.data[key];
+                if (!item) return null;
+                if (Date.now() > item.expiry) {
+                    delete this.data[key];
+                    return null;
+                }
+                return item.value;
+            },
+            clear() {
+                this.data = {};
+            }
+        };
+        
+        // Performance monitoring
+        const perf = {
+            marks: {},
+            start(name) {
+                this.marks[name] = Date.now();
+            },
+            end(name) {
+                if (!this.marks[name]) return;
+                const duration = Date.now() - this.marks[name];
+                console.log('[Perf] ' + name + ': ' + duration + 'ms');
+                delete this.marks[name];
+                return duration;
+            }
+        };
 
         // ============================================
         // INIT
         // ============================================
         async function init() {
-            setTimeout(() => {
-                document.getElementById('loadingScreen').classList.add('hidden');
-                
-                const stored = localStorage.getItem('sovereign_agent');
-                if (stored) {
-                    currentAgent = JSON.parse(stored);
-                    showMainApp();
-                } else {
-                    document.getElementById('loginPage').classList.remove('hidden');
+            // Register service worker for PWA caching
+            if ('serviceWorker' in navigator) {
+                try {
+                    await navigator.serviceWorker.register('/static/service-worker.js');
+                    console.log('[PWA] Service Worker registered');
+                } catch (err) {
+                    console.log('[PWA] Service Worker registration failed:', err);
                 }
-            }, 1500);
+            }
+            
+            // Fast splash screen (reduced to 600ms)
+            setTimeout(() => {
+                const splash = document.getElementById('loadingScreen');
+                splash.classList.add('fade-out');
+                
+                setTimeout(() => {
+                    splash.classList.add('hidden');
+                    
+                    const stored = localStorage.getItem('sovereign_agent');
+                    if (stored) {
+                        currentAgent = JSON.parse(stored);
+                        showMainApp();
+                    } else {
+                        document.getElementById('loginPage').classList.remove('hidden');
+                    }
+                }, 300);
+            }, 600);
         }
 
         // ============================================
@@ -680,49 +747,96 @@ app.get('/', (c) => {
         // ============================================
         async function loadDashboard() {
             try {
+                // Show skeleton loading
+                showSkeletonLoading('stat-customers');
+                showSkeletonLoading('stat-bookings');
+                showSkeletonLoading('stat-inquiry');
+                showSkeletonLoading('stat-paid');
+                
                 const res = await fetch('/api/dashboard?agent_id=' + currentAgent.id);
                 const stats = await res.json();
 
-                document.getElementById('stat-customers').textContent = stats.total_customers;
-                document.getElementById('stat-bookings').textContent = stats.total_bookings;
-                document.getElementById('stat-inquiry').textContent = stats.inquiry;
-                document.getElementById('stat-paid').textContent = stats.paid;
+                // Animate counter update
+                animateCounter('stat-customers', stats.total_customers);
+                animateCounter('stat-bookings', stats.total_bookings);
+                animateCounter('stat-inquiry', stats.inquiry);
+                animateCounter('stat-paid', stats.paid);
             } catch (err) {
                 console.error('Error loading dashboard:', err);
+                // Show error state
+                document.getElementById('stat-customers').textContent = '—';
+                document.getElementById('stat-bookings').textContent = '—';
+                document.getElementById('stat-inquiry').textContent = '—';
+                document.getElementById('stat-paid').textContent = '—';
             }
+        }
+        
+        // Helper: Show skeleton loading
+        function showSkeletonLoading(elementId) {
+            const el = document.getElementById(elementId);
+            el.innerHTML = '<div class="skeleton h-8 w-16"></div>';
+        }
+        
+        // Helper: Animate counter
+        function animateCounter(elementId, targetValue) {
+            const el = document.getElementById(elementId);
+            let current = 0;
+            const increment = Math.ceil(targetValue / 20);
+            const timer = setInterval(() => {
+                current += increment;
+                if (current >= targetValue) {
+                    current = targetValue;
+                    clearInterval(timer);
+                }
+                el.textContent = current;
+            }, 30);
         }
 
         // ============================================
         // CUSTOMERS
         // ============================================
         async function loadCustomers() {
+            perf.start('loadCustomers');
+            
             try {
+                // Check cache first
+                const cacheKey = 'customers_' + currentAgent.id;
+                const cached = cache.get(cacheKey);
+                
+                if (cached) {
+                    customers = cached;
+                    renderCustomers();
+                    perf.end('loadCustomers');
+                    return;
+                }
+                
+                // Fetch from API
                 const res = await fetch('/api/customers?agent_id=' + currentAgent.id);
                 customers = await res.json();
+                
+                // Cache for 1 minute
+                cache.set(cacheKey, customers, 60000);
+                
+                renderCustomers();
+                perf.end('loadCustomers');
+            } catch (err) {
+                console.error('Error loading customers:', err);
+                perf.end('loadCustomers');
+            }
+        }
+        
+        function renderCustomers() {
+            const html = customers.length === 0 
+                ? '<div class="card text-center text-gray-500"><i class="fas fa-users text-4xl mb-2"></i><p>Belum ada jama\'ah</p></div>'
+                : customers.map(c => '<div class="card"><div class="flex items-start justify-between"><div class="flex-1"><h3 class="font-bold text-lg">' + c.name + '</h3><p class="text-sm text-gray-600"><i class="fas fa-phone mr-1"></i> ' + c.phone + '</p>' + (c.email ? '<p class="text-sm text-gray-600"><i class="fas fa-envelope mr-1"></i> ' + c.email + '</p>' : '') + '</div><a href="https://wa.me/62' + c.phone.replace(/^0/, '') + '" target="_blank" class="text-green-600 hover:text-green-700"><i class="fab fa-whatsapp text-2xl"></i></a></div></div>').join('');
 
-                const html = customers.length === 0 
-                    ? '<div class="card text-center text-gray-500"><i class="fas fa-users text-4xl mb-2"></i><p>Belum ada jama\'ah</p></div>'
-                    : customers.map(c => \`
-                        <div class="card">
-                            <div class="flex items-start justify-between">
-                                <div class="flex-1">
-                                    <h3 class="font-bold text-lg">\${c.name}</h3>
-                                    <p class="text-sm text-gray-600"><i class="fas fa-phone mr-1"></i> \${c.phone}</p>
-                                    \${c.email ? \`<p class="text-sm text-gray-600"><i class="fas fa-envelope mr-1"></i> \${c.email}</p>\` : ''}
-                                </div>
-                                <a href="https://wa.me/62\${c.phone.replace(/^0/, '')}" target="_blank" class="text-green-600 hover:text-green-700">
-                                    <i class="fab fa-whatsapp text-2xl"></i>
-                                </a>
-                            </div>
-                        </div>
-                    \`).join('');
+            document.getElementById('customersList').innerHTML = html;
 
-                document.getElementById('customersList').innerHTML = html;
-
-                // Update booking modal customer select
-                const selectHTML = '<option value="">Pilih Jama\'ah</option>' + 
-                    customers.map(c => \`<option value="\${c.id}">\${c.name} (\${c.phone})</option>\`).join('');
-                document.getElementById('newBookingCustomer').innerHTML = selectHTML;
+            // Update booking modal customer select
+            const selectHTML = '<option value="">Pilih Jama\'ah</option>' + 
+                customers.map(c => '<option value="' + c.id + '">' + c.name + ' (' + c.phone + ')</option>').join('');
+            document.getElementById('newBookingCustomer').innerHTML = selectHTML;
+        }
             } catch (err) {
                 console.error('Error loading customers:', err);
             }
